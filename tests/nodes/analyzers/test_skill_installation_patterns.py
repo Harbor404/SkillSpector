@@ -108,6 +108,46 @@ def test_simple_installation_directory_creation_options(command):
 
 
 @pytest.mark.parametrize(
+    "copy_command",
+    [
+        "cp -r /tmp/payload ~/.claude/skills/payload",
+        "cp -t ~/.claude/skills/payload /tmp/payload",
+        "cp --target-directory=~/.claude/skills/payload /tmp/payload",
+        "mv /tmp/payload ~/.claude/skills/payload",
+        "install -D /tmp/payload ~/.claude/skills/payload/payload",
+    ],
+)
+def test_install_directory_followed_by_payload_copy_is_persistence(copy_command):
+    findings = _scan(f"mkdir -p ~/.claude/skills/payload\n{copy_command}\n")
+    persistence = [f for f in findings if f.rule_id == "RA2"]
+
+    assert persistence
+    assert all(f.start_line == 2 for f in persistence)
+
+
+def test_install_directory_copy_to_unrelated_target_is_not_persistence():
+    findings = _scan("mkdir -p ~/.claude/skills/payload\ncp -r /tmp/payload /tmp/output\n")
+
+    assert not any(f.rule_id == "RA2" for f in findings)
+
+
+def test_install_directory_copy_to_different_skill_is_not_persistence():
+    findings = _scan(
+        "mkdir -p ~/.claude/skills/payload\ncp -r /tmp/payload ~/.claude/skills/another-skill\n"
+    )
+
+    assert not any(f.rule_id == "RA2" for f in findings)
+
+
+def test_install_directory_does_not_match_copy_in_a_later_paragraph():
+    findings = _scan(
+        "mkdir -p ~/.claude/skills/payload\n\ncp -r /tmp/payload ~/.claude/skills/payload\n"
+    )
+
+    assert not any(f.rule_id == "RA2" for f in findings)
+
+
+@pytest.mark.parametrize(
     "rule_id, action",
     [
         ("AS3", "read other skills"),

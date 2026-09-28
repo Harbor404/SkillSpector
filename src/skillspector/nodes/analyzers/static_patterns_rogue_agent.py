@@ -25,6 +25,7 @@ Framework: ASI10.
 from __future__ import annotations
 
 import re
+import shlex
 import sys
 from bisect import bisect_right
 
@@ -161,9 +162,12 @@ _HIDDEN_DIRECTORY_WRITE_PATTERN = (
 )
 _STANDARD_SKILL_MKDIR = re.compile(
     r"[ \t]*mkdir[ \t]+(?:(?:-p|--parents)[ \t]+)?(?:--[ \t]+)?"
-    r"(?P<quote>['\"]?)~/\.(?:claude|codex|gemini)/skills"
-    r"(?:/[a-zA-Z0-9][a-zA-Z0-9_.-]*)?/?(?P=quote)[ \t]*"
+    r"(?P<quote>['\"]?)(?P<target>~/\.(?:claude|codex|gemini)/skills"
+    r"(?:/[a-zA-Z0-9][a-zA-Z0-9_.-]*)?)/?(?P=quote)[ \t]*"
 )
+_SKILL_PAYLOAD_COPY_COMMAND = re.compile(r"[ \t]*(?:cp|mv|install)(?=\s)[^\r\n]*", re.IGNORECASE)
+_MAX_SKILL_COPY_CONTEXT_CHARS = 4_096
+_MAX_SKILL_COPY_CONTEXT_LINES = 4
 
 # RA2: Session Persistence — unauthorized persistence across boundaries
 RA2_CODE_PATTERNS = [
@@ -313,8 +317,20 @@ def analyze(content: str, file_path: str, file_type: str) -> list[AnalyzerFindin
                 # establish persistence. Only exempt a complete simple command;
                 # extra targets, shell composition, writes, and traversal stay
                 # findings even when they mention the same skills directory.
-                if _STANDARD_SKILL_MKDIR.fullmatch(content[line_start:line_end]):
-                    continue
+                standard_mkdir = _STANDARD_SKILL_MKDIR.fullmatch(content[line_start:line_end])
+                if standard_mkdir:
+                    copy_match = _adjacent_skill_payload_copy(
+                        content,
+                        line_start,
+                        standard_mkdir.group("target"),
+                        line_starts,
+                        line_ends,
+                    )
+                    if copy_match is None:
+                        continue
+                    # Attribute persistence to the operation that puts content
+                    # in the loadable directory, not to creating that directory.
+                    match = copy_match
             line_num = bisect_right(line_starts, match.start())
             findings.append(
                 AnalyzerFinding(
@@ -330,6 +346,51 @@ def analyze(content: str, file_path: str, file_type: str) -> list[AnalyzerFindin
                 )
             )
     return findings
+
+
+def _adjacent_skill_payload_copy(
+    content: str,
+    mkdir_line_start: int,
+    target: str,
+    line_starts: tuple[int, ...],
+    line_ends: tuple[int, ...],
+) -> re.Match[str] | None:
+    """Find a nearby copy/move/install into the exact directory just created."""
+    mkdir_line_index = bisect_right(line_starts, mkdir_line_start) - 1
+    last_line_index = min(mkdir_line_index + _MAX_SKILL_COPY_CONTEXT_LINES, len(line_starts) - 1)
+    context_end = min(line_ends[last_line_index], mkdir_line_start + _MAX_SKILL_COPY_CONTEXT_CHARS)
+    normalized_target = target.rstrip("/")
+
+    for line_index in range(mkdir_line_index + 1, last_line_index + 1):
+        line_start = line_starts[line_index]
+        line_end = min(line_ends[line_index], context_end)
+        if line_start >= context_end:
+            break
+        line = content[line_start:line_end]
+        if not line.strip():
+            break
+        if line_end != line_ends[line_index] or not _SKILL_PAYLOAD_COPY_COMMAND.match(line):
+            continue
+        if _SHELL_COMMAND_COMPOSITION.search(line):
+            continue
+        try:
+            tokens = shlex.split(line, posix=True)
+        except ValueError:
+            continue
+        if not tokens or tokens[0].lower() not in {"cp", "mv", "install"}:
+            continue
+
+        destination = tokens[-1]
+        for option_index, token in enumerate(tokens[1:-1], start=1):
+            if token in {"-t", "--target-directory"}:
+                destination = tokens[option_index + 1]
+                break
+            if token.startswith("--target-directory="):
+                destination = token.partition("=")[2]
+                break
+        if destination == normalized_target or destination.startswith(f"{normalized_target}/"):
+            return _SKILL_PAYLOAD_COPY_COMMAND.match(content, line_start, line_end)
+    return None
 
 
 def _is_signed_companion_cli_update(
