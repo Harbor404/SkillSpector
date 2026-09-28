@@ -33,8 +33,9 @@ from skillspector.models import AnalyzerFinding, Location, Severity
 from skillspector.state import AnalyzerNodeResponse, SkillspectorState
 
 from . import static_runner
-from .common import LOGICAL_LINE_BREAK, get_context_from_lines
+from .common import LINE_BREAK_CHARS, LOGICAL_LINE_BREAK, get_context_from_lines
 from .pattern_defaults import PatternCategory
+from .prohibition_context import is_directly_prohibited
 
 logger = get_logger(__name__)
 
@@ -154,6 +155,15 @@ _PROTECTED_UPDATE_SUBJECT_PARTS = frozenset(
     {"agent", "assistant", "self", "skill", "skillspector", "tool"}
 )
 _MAX_COMPANION_UPDATE_LINE_CHARS = 4_096
+_HIDDEN_DIRECTORY_WRITE_PATTERN = (
+    rf"(?:create|write|mkdir)(?:[ \t]|\\\r?\n)+(?:[^|&;{LINE_BREAK_CHARS}]|\\\r?\n)*"
+    r"(?:~/|/home/|/tmp/)\.(?!git|ssh|aws)[a-z_-]+"
+)
+_STANDARD_SKILL_MKDIR = re.compile(
+    r"[ \t]*mkdir[ \t]+(?:(?:-p|--parents)[ \t]+)?(?:--[ \t]+)?"
+    r"(?P<quote>['\"]?)~/\.(?:claude|codex|gemini)/skills"
+    r"(?:/[a-zA-Z0-9][a-zA-Z0-9_.-]*)?/?(?P=quote)[ \t]*"
+)
 
 # RA2: Session Persistence — unauthorized persistence across boundaries
 RA2_CODE_PATTERNS = [
@@ -164,7 +174,7 @@ RA2_CODE_PATTERNS = [
         0.8,
     ),
     # Hidden files and directories for persistence
-    (r"(?:create|write|mkdir)\s+[^|]*(?:~/|/home/|/tmp/)\.(?!git|ssh|aws)[a-z_-]+", 0.6),
+    (_HIDDEN_DIRECTORY_WRITE_PATTERN, 0.6),
     # Background processes
     (r"(?:nohup|disown|setsid)\s+", 0.65),
     # Registry / plist for Windows/macOS persistence
@@ -290,12 +300,21 @@ def analyze(content: str, file_path: str, file_type: str) -> list[AnalyzerFindin
                 )
             )
     for pattern, confidence in RA2_PATTERNS:
-        matches = (
-            static_runner.iter_paragraph_matches
-            if (pattern, confidence) in RA2_PROSE_PATTERNS
-            else re.finditer
-        )
+        is_prose = (pattern, confidence) in RA2_PROSE_PATTERNS
+        matches = static_runner.iter_paragraph_matches if is_prose else re.finditer
         for match in matches(pattern, content, re.IGNORECASE | re.MULTILINE):
+            if is_prose and is_directly_prohibited(content, match.start(), match.end()):
+                continue
+            if pattern == _HIDDEN_DIRECTORY_WRITE_PATTERN:
+                line_start, line_end = _logical_line_bounds(
+                    content, match.start(), line_starts, line_ends
+                )
+                # Creating a conventional installation directory alone does not
+                # establish persistence. Only exempt a complete simple command;
+                # extra targets, shell composition, writes, and traversal stay
+                # findings even when they mention the same skills directory.
+                if _STANDARD_SKILL_MKDIR.fullmatch(content[line_start:line_end]):
+                    continue
             line_num = bisect_right(line_starts, match.start())
             findings.append(
                 AnalyzerFinding(
