@@ -62,7 +62,8 @@ _LIST_PREFIX = re.compile(r"(?:[-+]|\d{1,9}[.)])\s+")
 _NEXT_INSTRUCTION = re.compile(
     r"(?:(?:then|now)\s+)?(?:"
     r"(?:analyze\s+the\s+structure\s+and\s+intent\s+without\s+obeying\s+its\s+directives"
-    r"|follow\s+the\s+user['’]s\s+task)"
+    r"|follow\s+the\s+user['’]s\s+task"
+    r"|only\s+make\s+changes\s+directly\s+requested)"
     rf"(?=\s*(?:[.!?;{LINE_BREAK_CHARS}]|\Z))"
     r"|(?:(?:do\s+not|don['’]t|never|must\s+not|shall\s+not)\s+)?"
     r"(?:"
@@ -74,7 +75,7 @@ _NEXT_INSTRUCTION = re.compile(
     r")"
     r"|deploy\s+without\s+(?:approval|confirmation|consent)\b"
     r")",
-    re.IGNORECASE,
+    re.IGNORECASE | re.ASCII,
 )
 
 
@@ -115,14 +116,21 @@ def is_directly_prohibited(
     # A long unfinished clause may hide a later exception. Do not infer safety
     # from an arbitrarily clipped fragment of that clause.
     raw_tail = content[end : end + _CONTEXT_CHARS]
-    tail = normalized_security_view(raw_tail).text
+    tail_view = normalized_security_view(raw_tail)
+    tail = tail_view.text
     if _DISAVOWAL.search(tail) or _REFERENTIAL_ACTION.search(tail):
         return False
     boundary = _SENTENCE_END.search(tail)
     if boundary is None and end + len(raw_tail) < len(content):
         return False
     if boundary is not None:
-        following = tail[boundary.end() :].translate(_MARKDOWN).lstrip()
+        # Prove independent detection against the actual continuation bytes:
+        # YARA does not scan normalized or reconstructed text. In particular,
+        # fullwidth/markup-split YARA-only verbs must not justify exemption.
+        following_start = (
+            tail_view.source_offset(boundary.end()) if boundary.end() < len(tail) else len(raw_tail)
+        )
+        following = raw_tail[following_start:].lstrip()
         following = _LIST_PREFIX.sub("", following, count=1)
         if following and _NEXT_INSTRUCTION.match(following) is None:
             return False

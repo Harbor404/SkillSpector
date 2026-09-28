@@ -23,6 +23,9 @@ def _ea2(content: str):
     "content",
     [
         "[Stack version, naming conventions, no new dependencies without asking]",
+        "- [Stack version, naming conventions, no new dependencies without asking]\n"
+        "- Only make changes directly requested. Do not add features, abstractions, "
+        "or files beyond what was asked.",
         "No changes without approval.",
         "Do not add new dependencies without asking.",
         "Never deploy without approval.",

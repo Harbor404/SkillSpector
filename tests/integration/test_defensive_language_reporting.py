@@ -36,7 +36,9 @@ _BENIGN_FILES = {
     ),
     "references/templates.md": (
         "## Constraints\n\n"
-        "[Stack version, naming conventions, no new dependencies without asking]\n"
+        "- [Stack version, naming conventions, no new dependencies without asking]\n"
+        "- Only make changes directly requested. Do not add features, abstractions, "
+        "or files beyond what was asked.\n"
     ),
 }
 _MALICIOUS_LINES = {
