@@ -676,6 +676,7 @@ def _is_prohibited_prompt_reveal(data: bytes, start: int, end: int) -> bool:
         len(prefix),
         len(prefix) + len(action),
         allowed_tail=PROMPT_REVEAL_TAIL,
+        allow_yara_continuation=True,
     )
 
 

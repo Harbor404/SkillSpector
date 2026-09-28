@@ -70,11 +70,19 @@ _NEXT_INSTRUCTION = re.compile(
     r"(?:reveal|output|print|show|display|expose|return|echo)\s+"
     r"(?:your\s+)?(?:full\s+)?(?:system\s+)?"
     r"(?:prompt|instructions?|rules?|guidelines?|directives?)\b"
-    r"|(?:reveal|print|dump|expose|show)\s+(?:the\s+)?"
-    r"(?:system|developer)\s+(?:prompt|message|instructions)\b"
+    r"|(?P<yara_reveal>(?:reveal|print|dump|expose|show)\s+(?:the\s+)?"
+    r"(?:system|developer)\s+(?:prompt|message|instructions)\b)"
     r")"
     r"|deploy\s+without\s+(?:approval|confirmation|consent)\b"
     r")",
+    re.IGNORECASE | re.ASCII,
+)
+
+# Exact raw ASCII context alternatives from agent_skills.yar. A YARA-only
+# action string cannot prove a finding without the rule's context condition.
+# Do not normalize these bytes or broaden literal spaces to Unicode whitespace.
+_YARA_AGENT_CONTEXT = re.compile(
+    r"(?:AI agent|assistant|LLM|model|system prompt|developer message|tool description)",
     re.IGNORECASE | re.ASCII,
 )
 
@@ -85,6 +93,7 @@ def is_directly_prohibited(
     end: int,
     *,
     allowed_tail: re.Pattern[str] | None = None,
+    allow_yara_continuation: bool = False,
 ) -> bool:
     """Whether a bounded, unambiguous prohibition governs this exact action.
 
@@ -92,6 +101,8 @@ def is_directly_prohibited(
     quotation marks and arbitrary intervening words are not exempted. Exceptions
     in the same clause also retain detection. Nonempty object completions must
     fully match the caller's allowed_tail grammar after formatting is stripped.
+    Callers may allow YARA-only continuations only when content is raw source,
+    because YARA does not scan normalized or reconstructed security views.
     Work per match is constant-bounded; unknown or incomplete context retains
     detection.
     """
@@ -132,7 +143,17 @@ def is_directly_prohibited(
         )
         following = raw_tail[following_start:].lstrip()
         following = _LIST_PREFIX.sub("", following, count=1)
-        if following and _NEXT_INSTRUCTION.match(following) is None:
+        independent = _NEXT_INSTRUCTION.match(following) if following else None
+        if following and independent is None:
+            return False
+        if (
+            independent is not None
+            and independent.group("yara_reveal") is not None
+            and (
+                not allow_yara_continuation
+                or _YARA_AGENT_CONTEXT.search(content, left, end + _CONTEXT_CHARS) is None
+            )
+        ):
             return False
     clause = tail[: boundary.start()] if boundary is not None else tail
     if _EXCEPTION.search(clause):

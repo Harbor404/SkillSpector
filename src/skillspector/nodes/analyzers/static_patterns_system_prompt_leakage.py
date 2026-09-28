@@ -759,7 +759,11 @@ def _analyze(
             pattern, content, re.IGNORECASE | re.MULTILINE
         ):
             if is_directly_prohibited(
-                content, match.start(), match.end(), allowed_tail=PROMPT_REVEAL_TAIL
+                content,
+                match.start(),
+                match.end(),
+                allowed_tail=PROMPT_REVEAL_TAIL,
+                allow_yara_continuation=source_view.name == "raw",
             ):
                 continue
             if prepared.is_report_label(match, source_view):
