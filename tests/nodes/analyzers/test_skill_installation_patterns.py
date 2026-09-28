@@ -30,7 +30,7 @@ def test_standard_skill_installation_is_not_snooping_or_persistence(agent, targe
     assert not {"AS3", "RA2"}.intersection(f.rule_id for f in _scan(content, path))
 
 
-@pytest.mark.parametrize("operation", ["ls", "find", "dir"])
+@pytest.mark.parametrize("operation", ["ls", "find", "dir", "gls", "gfind", "/usr/local/bin/gls"])
 def test_actual_skill_enumeration_is_still_reported(operation):
     findings = _scan(f"{operation} ~/.claude/skills")
 

@@ -113,7 +113,7 @@ AS3_CODE_PATTERNS = [
         r"(?:os\.listdir|os\.scandir|glob\.glob|Path\.iterdir)\s*\([^)]*\.(?:claude|codex|gemini)/skills?",
         0.9,
     ),
-    (r"(?<![\w-])(?:ls|find|dir)\s+[^|&;\n]*\.(?:claude|codex|gemini)/skills?", 0.85),
+    (r"(?<![\w-])g?(?:ls|find|dir)\s+[^|&;\n]*\.(?:claude|codex|gemini)/skills?", 0.85),
     # Reading other skills' SKILL.md files
     (r"open\s*\(\s*['\"][^'\"]*SKILL\.md['\"].*?\bother\b", 0.85),
     # Accessing skills/CURRENT or adjacent skill directories

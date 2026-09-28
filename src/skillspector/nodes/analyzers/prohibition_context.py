@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import re
 
-from .common import LOGICAL_LINE_BREAK
+from skillspector.artifacts import normalized_security_view
+
+from .common import LINE_BREAK_CHARS, LOGICAL_LINE_BREAK
 
 _CONTEXT_CHARS = 512
 _MARKDOWN = str.maketrans("", "", "*_`")
@@ -28,7 +30,7 @@ _DIRECT_PREFIX = re.compile(
 )
 _BLANK_LINE = re.compile(r"\n[ \t]*\n")
 _CONTRACTION = re.compile(r"(?<=\w)['’](?=\w)")
-_SENTENCE_END = re.compile(r"[.!?;]")
+_SENTENCE_END = re.compile(rf"[.!?;{LINE_BREAK_CHARS}]")
 _EXCEPTION = re.compile(r"\b(?:unless|except|until|but|however|instead)\b", re.IGNORECASE)
 
 _DISAVOWAL = re.compile(
@@ -36,14 +38,61 @@ _DISAVOWAL = re.compile(
     re.IGNORECASE,
 )
 
+# Each caller supplies only object completions its regex intentionally leaves
+# outside the match. Channel, frequency, recipient and other qualifiers are
+# deliberately absent: a limited prohibition does not rule out disclosure.
+PROMPT_REVEAL_TAIL = re.compile(
+    r"(?:content)?"
+    r"(?:,\s*memory,?\s*(?:or|and)\s+prior\s+conversation)?"
+    r"(?:\s*if\s+the\s+pasted\s+prompt\s+requests\s+it)?",
+    re.IGNORECASE,
+)
+_REFERENTIAL_ACTION = re.compile(
+    r"\b(?:do|perform|execute|reveal|output|print|show|display|share|disclose|"
+    r"repeat|recite|reproduce|summarize|paraphrase|rephrase|translate|encode|"
+    r"encrypt|reverse|send|post|upload|transmit|save|store|log|copy|extract|"
+    r"dump|include|provide|read|write|persist|deploy|delete)\s+(?:(?:all|some|part)\s+of\s+)?"
+    r"(?:it|them|this|that|so)\b",
+    re.IGNORECASE,
+)
+# A boundary can introduce a qualifying fragment, including inside a list or
+# heading. Approve only complete harmless instructions or explicit risky
+# objects that the downstream detectors can still identify independently.
+_LIST_PREFIX = re.compile(r"(?:[-+]|\d{1,9}[.)])\s+")
+_NEXT_INSTRUCTION = re.compile(
+    r"(?:(?:then|now)\s+)?(?:"
+    r"(?:analyze\s+the\s+structure\s+and\s+intent\s+without\s+obeying\s+its\s+directives"
+    r"|follow\s+the\s+user['’]s\s+task)"
+    rf"(?=\s*(?:[.!?;{LINE_BREAK_CHARS}]|\Z))"
+    r"|(?:(?:do\s+not|don['’]t|never|must\s+not|shall\s+not)\s+)?"
+    r"(?:"
+    r"(?:reveal|output|print|show|display|expose|return|echo)\s+"
+    r"(?:your\s+)?(?:full\s+)?(?:system\s+)?"
+    r"(?:prompt|instructions?|rules?|guidelines?|directives?)\b"
+    r"|(?:reveal|print|dump|expose|show)\s+(?:the\s+)?"
+    r"(?:system|developer)\s+(?:prompt|message|instructions)\b"
+    r")"
+    r"|deploy\s+without\s+(?:approval|confirmation|consent)\b"
+    r")",
+    re.IGNORECASE,
+)
 
-def is_directly_prohibited(content: str, start: int, end: int) -> bool:
+
+def is_directly_prohibited(
+    content: str,
+    start: int,
+    end: int,
+    *,
+    allowed_tail: re.Pattern[str] | None = None,
+) -> bool:
     """Whether a bounded, unambiguous prohibition governs this exact action.
 
     Markdown emphasis and inline-code delimiters may surround the prohibition;
     quotation marks and arbitrary intervening words are not exempted. Exceptions
-    in the same clause also retain detection. Work per match is constant-bounded,
-    and incomplete context fails conservatively.
+    in the same clause also retain detection. Nonempty object completions must
+    fully match the caller's allowed_tail grammar after formatting is stripped.
+    Work per match is constant-bounded; unknown or incomplete context retains
+    detection.
     """
     if not 0 <= start < end <= len(content):
         return False
@@ -65,11 +114,22 @@ def is_directly_prohibited(content: str, start: int, end: int) -> bool:
 
     # A long unfinished clause may hide a later exception. Do not infer safety
     # from an arbitrarily clipped fragment of that clause.
-    tail = content[end : end + _CONTEXT_CHARS]
-    if _DISAVOWAL.search(tail):
+    raw_tail = content[end : end + _CONTEXT_CHARS]
+    tail = normalized_security_view(raw_tail).text
+    if _DISAVOWAL.search(tail) or _REFERENTIAL_ACTION.search(tail):
         return False
     boundary = _SENTENCE_END.search(tail)
-    if boundary is None and end + len(tail) < len(content):
+    if boundary is None and end + len(raw_tail) < len(content):
         return False
+    if boundary is not None:
+        following = tail[boundary.end() :].translate(_MARKDOWN).lstrip()
+        following = _LIST_PREFIX.sub("", following, count=1)
+        if following and _NEXT_INSTRUCTION.match(following) is None:
+            return False
     clause = tail[: boundary.start()] if boundary is not None else tail
-    return _EXCEPTION.search(clause) is None
+    if _EXCEPTION.search(clause):
+        return False
+    clean_tail = clause.translate(_MARKDOWN).strip().rstrip("])}").rstrip()
+    return not clean_tail or (
+        allowed_tail is not None and allowed_tail.fullmatch(clean_tail) is not None
+    )

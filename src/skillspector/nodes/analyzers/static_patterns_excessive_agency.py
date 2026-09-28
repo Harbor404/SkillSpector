@@ -117,6 +117,10 @@ _APPROVAL_ACTION = re.compile(
     re.IGNORECASE,
 )
 _NO_UNAPPROVED_ACTION = re.compile(rf"\bno\s+(?P<object>{_APPROVAL_OBJECT})\s+$", re.IGNORECASE)
+_PROHIBITED_ACTION_OBJECT = re.compile(
+    r"(?:(?:all|any|new)\s+)?(?:files|commands|changes|requests|messages|dependencies)",
+    re.IGNORECASE,
+)
 
 
 def _requires_approval(content: str, start: int, end: int) -> bool:
@@ -445,7 +449,12 @@ def analyze(content: str, file_path: str, file_type: str) -> list[AnalyzerFindin
         )
         for match in matches(pattern, content, re.IGNORECASE | re.MULTILINE):
             if (pattern, confidence) in EA2_PROSE_PATTERNS and (
-                is_directly_prohibited(content, match.start(), match.end())
+                is_directly_prohibited(
+                    content,
+                    match.start(),
+                    match.end(),
+                    allowed_tail=_PROHIBITED_ACTION_OBJECT,
+                )
                 or _requires_approval(content, match.start(), match.end())
             ):
                 continue
