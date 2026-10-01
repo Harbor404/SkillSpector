@@ -60,6 +60,11 @@ _STATIC_BRACE_WORD_CHARS = 256
 _PRINTF_STATIC_CHARS = 256
 _PRINTF_STATIC_ARGUMENTS = 32
 _PRINTF_STATIC_WORD_RE = re.compile(r"[-A-Za-z0-9_./*?%]{0,64}")
+# A bounded ``printf`` format operand may also carry POSIX backslash escapes.
+_PRINTF_FORMAT_WORD_RE = re.compile(r"[-A-Za-z0-9_./*?%\\]{0,64}")
+# Anything that would end or split the shell word that a decoded ``printf``
+# result is substituted into. Every other byte is inert data for this parser.
+_PRINTF_WORD_SEPARATOR_RE = re.compile(r"[\s'\"`\\$;&|()<>{}~\x00]")
 _DESTRUCTIVE_COMMAND_BASENAMES = frozenset({"rm", "del", "erase"})
 _QUOTED_GLOB_SENTINEL = "\ue000"
 _DYNAMIC_SHELL_WORD_SENTINEL = "\ue001"
@@ -1202,6 +1207,72 @@ def _next_shell_invocation_word(
     return "".join(output) if word_started else None, cursor, False
 
 
+_PRINTF_HEX_ESCAPE_RE = re.compile(r"[0-9A-Fa-f]{1,2}")
+_PRINTF_OCTAL_ESCAPE_RE = re.compile(r"[0-7]{1,3}")
+_PRINTF_ESCAPE_SEQUENCES = {
+    "a": "\a",
+    "b": "\b",
+    "e": "\x1b",
+    "E": "\x1b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+}
+
+
+def _decode_printf_escapes(text: str) -> str | None:
+    """Decode the POSIX ``printf`` escapes inside one bounded literal segment.
+
+    Only escapes that POSIX/GNU ``printf`` defines are decoded.  Anything else
+    makes the substitution undecidable and returns ``None`` so the caller keeps
+    its fail-closed behaviour.
+    """
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        character = text[cursor]
+        if character != "\\":
+            output.append(character)
+            cursor += 1
+            continue
+        if cursor + 1 >= len(text):
+            return None
+        escaped = text[cursor + 1]
+        simple = _PRINTF_ESCAPE_SEQUENCES.get(escaped)
+        if simple is not None:
+            output.append(simple)
+            cursor += 2
+            continue
+        if escaped == "x":
+            digits = _PRINTF_HEX_ESCAPE_RE.match(text, cursor + 2)
+            if digits is None:
+                return None
+            output.append(chr(int(digits.group(0), 16)))
+            cursor = digits.end()
+            continue
+        if escaped in "01234567":
+            digits = _PRINTF_OCTAL_ESCAPE_RE.match(text, cursor + 1)
+            if digits is None:
+                return None
+            output.append(chr(int(digits.group(0), 8)))
+            cursor = digits.end()
+            continue
+        return None
+    return "".join(output)
+
+
+def _bounded_printf_word(result: str) -> str | None:
+    """Return a decoded ``printf`` result only when it stays one inert word."""
+    if _PRINTF_WORD_SEPARATOR_RE.search(result) is not None:
+        return None
+    return result
+
+
 def _static_printf_substitution(
     content: str,
     start: int,
@@ -1225,13 +1296,29 @@ def _static_printf_substitution(
     if not arguments or len(arguments) > _PRINTF_STATIC_ARGUMENTS + 1:
         return None
     format_word, *values = arguments
-    if _PRINTF_STATIC_WORD_RE.fullmatch(format_word) is None or any(
+    if _PRINTF_FORMAT_WORD_RE.fullmatch(format_word) is None or any(
         _PRINTF_STATIC_WORD_RE.fullmatch(value) is None for value in values
     ):
         return None
 
     segments: list[str | None] = []
     literal: list[str] = []
+
+    def flush_literal() -> bool:
+        # POSIX ``printf`` decodes escapes in the format operand before any
+        # conversion runs, so decode each literal segment in place. Decoding
+        # after the conversion split keeps an escaped percent sign from
+        # re-entering conversion parsing.
+        text = "".join(literal)
+        literal.clear()
+        if "\\" in text:
+            decoded = _decode_printf_escapes(text)
+            if decoded is None:
+                return False
+            text = decoded
+        segments.append(text)
+        return True
+
     cursor = 0
     while cursor < len(format_word):
         character = format_word[cursor]
@@ -1241,18 +1328,17 @@ def _static_printf_substitution(
             continue
         if cursor + 1 >= len(format_word) or format_word[cursor + 1] not in "s%":
             return None
-        if literal:
-            segments.append("".join(literal))
-            literal.clear()
+        if literal and not flush_literal():
+            return None
         conversion = format_word[cursor + 1]
         segments.append(None if conversion == "s" else "%")
         cursor += 2
-    if literal:
-        segments.append("".join(literal))
+    if literal and not flush_literal():
+        return None
 
     conversions = sum(segment is None for segment in segments)
     if conversions == 0:
-        return format_word
+        return _bounded_printf_word("".join(segments))
     remaining = iter(values)
     output: list[str] = []
     cycles = max(1, (len(values) + conversions - 1) // conversions)
@@ -1261,8 +1347,7 @@ def _static_printf_substitution(
             output.append(next(remaining, "") if segment is None else segment)
         if sum(len(piece) for piece in output) > 64:
             return None
-    result = "".join(output)
-    return result if _PRINTF_STATIC_WORD_RE.fullmatch(result) is not None else None
+    return _bounded_printf_word("".join(output))
 
 
 def _may_have_destructive_outer_operands(content: str) -> bool:
