@@ -166,6 +166,69 @@ class TestSubprocess:
         assert any(f.rule_id == "AST4" for f in findings)
 
 
+class TestSubprocessGuidance:
+    """AST4 guidance should distinguish fixed argv, shell strings, and unknown input."""
+
+    def test_fixed_argv_shell_false_does_not_recommend_the_present_setting(self):
+        findings = _run('import subprocess\nsubprocess.run(["ls", "-la"], shell=False)')
+        finding = next(f for f in findings if f.rule_id == "AST4")
+
+        explanation = finding.explanation or ""
+        remediation = finding.remediation or ""
+
+        assert "fixed argument vector" in explanation.lower()
+        assert "shell expansion is disabled" in explanation
+        assert "shell=False" in remediation
+        assert "validate the executable" in remediation.lower()
+        assert "Use subprocess.run() with shell=False" not in remediation
+
+    def test_concatenated_shell_command_identifies_the_injection_path(self):
+        code = (
+            "import subprocess\n"
+            "target = 'example.com'\n"
+            "subprocess.run('ping ' + target, shell=True)\n"
+        )
+        findings = _run(code)
+        finding = next(f for f in findings if f.rule_id == "AST4")
+
+        explanation = finding.explanation or ""
+        remediation = finding.remediation or ""
+
+        assert "shell=True" in explanation
+        assert "concatenated input" in explanation
+        assert "inject additional commands" in explanation
+        assert "explicit argument vector" in remediation
+        assert "shell=False" in remediation
+
+    def test_unknown_caller_input_is_described_without_claiming_a_shell_path(self):
+        code = "import subprocess\ncommand = build_command()\nsubprocess.run(command)\n"
+        findings = _run(code)
+        finding = next(f for f in findings if f.rule_id == "AST4")
+
+        explanation = finding.explanation or ""
+        remediation = finding.remediation or ""
+
+        assert "unknown caller input" in explanation.lower()
+        assert "not statically known" in explanation
+        assert "shell expansion is disabled" in explanation
+        assert "allowlist" in remediation
+        assert "validate every dynamic argument" in remediation
+
+    def test_guidance_is_distinct_across_the_three_cases(self):
+        fixed = _run('import subprocess\nsubprocess.run(["ls"], shell=False)')
+        shell = _run(
+            "import subprocess\ncommand = 'echo ' + user_input\nsubprocess.run(command, shell=True)"
+        )
+        unknown = _run("import subprocess\nsubprocess.run(command)")
+
+        guidance = []
+        for findings in (fixed, shell, unknown):
+            finding = next(f for f in findings if f.rule_id == "AST4")
+            guidance.append((finding.explanation, finding.remediation))
+
+        assert len(set(guidance)) == 3
+
+
 class TestOsSystem:
     def test_os_system_produces_ast5(self):
         code = 'import os\nos.system("rm -rf /")'
