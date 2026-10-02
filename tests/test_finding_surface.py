@@ -10,9 +10,10 @@ import json
 import pytest
 
 from skillspector.models import AnalyzerFinding, Finding, Location, Severity
+from skillspector.nodes.analyzers import static_runner
 from skillspector.nodes.analyzers.static_runner import analyzer_finding_to_finding
 from skillspector.nodes.deduplicate import deduplicate
-from skillspector.nodes.report import _build_sarif_properties, _format_json
+from skillspector.nodes.report import _build_sarif_properties, _expand_occurrences, _format_json
 from skillspector.surface import (
     CODE,
     COMMENTS,
@@ -41,6 +42,10 @@ from skillspector.surface import (
         (".mcp.json", CONFIG),
         ("config/settings.yaml", CONFIG),
         ("requirements.txt", CONFIG),
+        ("requirements-dev.txt", CONFIG),
+        ("requirements/runtime.txt", CONFIG),
+        ("docs/install.sh", CODE),
+        ("config/hook.py", CODE),
         (".env.local", CONFIG),
     ],
 )
@@ -56,8 +61,15 @@ def test_infer_surface_classifies_the_path(file_path: str, expected: str) -> Non
         ("src/main.py", "    # indented", COMMENTS),
         ("src/main.py", "value = 1", CODE),
         ("app.js", "// note", COMMENTS),
-        ("app.js", " * continuation", COMMENTS),
+        ("app.js", "/* comment", COMMENTS),
+        ("app.js", "/**/ eval(x)", CODE),
+        ("app.js", "*/ eval(x)", CODE),
+        ("app.js", " * continuation", CODE),
         ("app.js", "const value = 1", CODE),
+        ("page.html", "<!-- comment", COMMENTS),
+        ("page.html", "<!-- x --><script>eval(x)</script>", CODE),
+        ("script.lua", "-- note", COMMENTS),
+        ("script.lua", "--[[x]] os.execute('id')", CODE),
         ("query.sql", "-- note", COMMENTS),
         # a comment inside a config file is still a comment
         ("setup.cfg", "# pinned", COMMENTS),
@@ -74,6 +86,53 @@ def test_comment_refines_code_and_config_only(
 ) -> None:
     """The matched line refines code/config paths and leaves other labels alone."""
     assert infer_surface(file_path, line_text) == expected
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("# only comment\n# still comment\n", COMMENTS),
+        ("# first line\npayload = 1\n", CODE),
+    ],
+)
+def test_multiline_finding_requires_every_line_to_be_comment(content: str, expected: str) -> None:
+    """A multi-line finding is comments only when all covered lines are comments."""
+    finding = AnalyzerFinding(
+        rule_id="RP1",
+        message="multi-line",
+        severity=Severity.MEDIUM,
+        location=Location(file="src/main.py", start_line=1, end_line=2),
+    )
+    converted = static_runner._convert_analyzer_finding(
+        finding,
+        path="src/main.py",
+        file_type="python",
+        content=content,
+        content_lines=content.splitlines(),
+        normalized_license_lines=None,
+    )
+
+    assert converted is not None
+    assert converted.surface == expected
+
+
+def test_deduplicate_to_expand_preserves_each_occurrence_surface() -> None:
+    """The report expansion path keeps occurrence labels after compaction."""
+    findings = [
+        analyzer_finding_to_finding(_analyzer_finding("SKILL.md"), line_text="# Role"),
+        analyzer_finding_to_finding(_analyzer_finding("scripts/helper.py"), line_text="    # x"),
+        analyzer_finding_to_finding(_analyzer_finding("docs/guide.md"), line_text="# Guide"),
+    ]
+    for finding in findings:
+        finding.match_fingerprint = "shared-fingerprint"
+
+    expanded = _expand_occurrences(deduplicate(findings))
+
+    assert {finding.file: finding.surface for finding in expanded} == {
+        "SKILL.md": INSTRUCTIONS,
+        "scripts/helper.py": COMMENTS,
+        "docs/guide.md": DOCS,
+    }
 
 
 def _analyzer_finding(file_path: str) -> AnalyzerFinding:

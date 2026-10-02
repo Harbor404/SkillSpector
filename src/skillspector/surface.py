@@ -56,10 +56,16 @@ _CONFIG_EXTENSIONS = frozenset(
 _CONFIG_BASENAMES = frozenset(
     "requirements.txt constraints.txt gemfile gemfile.lock pipfile pipfile.lock justfile .env".split()
 )
-_CONFIG_DIRS = frozenset("config configs .github".split())
+_CONFIG_DIRS = frozenset("config configs .github requirements".split())
+_EXECUTABLE_EXTENSIONS = frozenset(
+    ".py .pyi .sh .bash .zsh .ps1 .js .mjs .cjs .jsx .ts .tsx .go .rs .java .kt "
+    ".c .h .cc .cpp .hpp .cs .php .swift .rb .pl .tf .lua .sql .hs".split()
+)
 
-# A line-leading ``*`` continues a C-style block comment; ``//`` and ``/*`` open one.
-_BLOCK_MARKERS = ("//", "/*", "* ", "*/")
+# ``//`` is a complete line comment; ``/*`` is only a comment when it has
+# no same-line closing delimiter.  A bare ``*/`` or ``*`` continuation is not
+# enough to prove a line is comment-only.
+_BLOCK_MARKERS = ("//", "/*")
 _COMMENT_MARKERS: dict[str, tuple[str, ...]] = {
     **dict.fromkeys(
         ".py .pyi .sh .bash .zsh .ps1 .yaml .yml .toml .rb .pl .tf .cfg .conf .ini .env".split(),
@@ -108,7 +114,11 @@ def _is_test(parts: list[str], basename: str) -> bool:
 
 def _is_config_basename(basename: str) -> bool:
     """Return whether a basename is a configuration or manifest name."""
-    return _is_env(basename) or basename in _CONFIG_BASENAMES
+    return (
+        _is_env(basename)
+        or basename in _CONFIG_BASENAMES
+        or (basename.startswith("requirements") and basename.endswith(".txt"))
+    )
 
 
 def _is_docs(parts: list[str], basename: str) -> bool:
@@ -133,20 +143,39 @@ def _classify(parts: list[str], basename: str) -> str:
     # reported as prose merely for its extension.
     if _is_config_basename(basename):
         return CONFIG
+    # Executable source extensions must not be contradicted by a docs/config
+    # directory name (for example ``docs/install.sh`` or ``config/hook.py``).
+    extension = _extension(basename)
+    if extension in _EXECUTABLE_EXTENSIONS:
+        return CODE
+    if any(part == "requirements" for part in parts[:-1]) and extension == ".txt":
+        return CONFIG
     if _is_docs(parts, basename):
         return DOCS
-    if _extension(basename) in _CONFIG_EXTENSIONS or any(
-        part in _CONFIG_DIRS for part in parts[:-1]
-    ):
+    if extension in _CONFIG_EXTENSIONS or any(part in _CONFIG_DIRS for part in parts[:-1]):
         return CONFIG
     return CODE
 
 
 def _is_comment_line(line_text: str, basename: str) -> bool:
-    """Return whether a line's first non-whitespace content is a comment."""
+    """Return whether a line is provably comment-only for the file's syntax."""
     markers = _COMMENT_MARKERS.get(_extension(basename), ("#",) if _is_env(basename) else ())
     stripped = line_text.strip()
-    return bool(markers) and bool(stripped) and stripped.startswith(markers)
+    if not markers or not stripped:
+        return False
+    if "#" in markers and stripped.startswith("#"):
+        return True
+    if "//" in markers and stripped.startswith("//"):
+        return True
+    if "--" in markers and stripped.startswith("--"):
+        if stripped.startswith("--[["):
+            return "]]" not in stripped[4:]
+        return True
+    if "/*" in markers and stripped.startswith("/*"):
+        return "*/" not in stripped[2:]
+    if "<!--" in markers and stripped.startswith("<!--"):
+        return "-->" not in stripped[4:]
+    return False
 
 
 def infer_surface(file_path: str, line_text: str | None = None) -> str:

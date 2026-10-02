@@ -68,7 +68,7 @@ from skillspector.security_reconstruction import (
     build_declared_marker_views,
 )
 from skillspector.state import AnalyzerNodeResponse, SkillspectorState, transitive_remaining_seconds
-from skillspector.surface import infer_surface
+from skillspector.surface import COMMENTS, infer_surface
 
 from .common import (
     LINE_BREAK_CHARS,
@@ -871,7 +871,16 @@ def _convert_analyzer_finding(
             if triage_tag not in af.tags:
                 af.tags.append(triage_tag)
     start_line = af.location.start_line
-    line_text = content_lines[start_line - 1] if 0 < start_line <= len(content_lines) else None
+    end_line = af.location.end_line or start_line
+    start_index = max(0, start_line - 1)
+    end_index = min(len(content_lines), end_line)
+    covered_lines = content_lines[start_index:end_index]
+    line_text = (
+        covered_lines[0]
+        if covered_lines
+        and all(infer_surface(path, line_text) == COMMENTS for line_text in covered_lines)
+        else None
+    )
     return analyzer_finding_to_finding(af, line_text=line_text)
 
 

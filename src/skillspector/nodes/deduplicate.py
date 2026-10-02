@@ -11,7 +11,7 @@ from hashlib import sha256
 
 from skillspector.logging_config import get_logger
 from skillspector.models import Finding
-from skillspector.surface import infer_surface
+from skillspector.surface import SURFACES, infer_surface
 
 logger = get_logger(__name__)
 
@@ -158,6 +158,9 @@ def _occurrence_surface(finding: Finding, occurrence: dict[str, object]) -> str:
     across files) falls back to a path-only inference, because the matched line
     for that other file is not retained here.
     """
+    recorded_surface = occurrence.get("surface")
+    if isinstance(recorded_surface, str) and recorded_surface in SURFACES:
+        return recorded_surface
     file = str(occurrence.get("file", finding.file))
     if file == finding.file and finding.surface:
         return finding.surface
