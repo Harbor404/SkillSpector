@@ -376,6 +376,8 @@ def _subprocess_shell_mode(node: ast.Call, attr: str) -> bool | None:
     """Return the literal shell mode for *node*, or None when it is dynamic."""
     if attr in {"getoutput", "getstatusoutput"}:
         return True
+    if any(keyword.arg is None for keyword in node.keywords):
+        return None
     for keyword in reversed(node.keywords):
         if keyword.arg != "shell":
             continue
@@ -383,6 +385,45 @@ def _subprocess_shell_mode(node: ast.Call, attr: str) -> bool | None:
             return keyword.value.value
         return None
     return False
+
+
+_SHELL_INTERPRETERS = frozenset({"bash", "dash", "ksh", "sh", "zsh"})
+_CMD_INTERPRETERS = frozenset({"cmd", "cmd.exe"})
+_POWERSHELL_INTERPRETERS = frozenset({"powershell", "powershell.exe", "pwsh", "pwsh.exe"})
+
+
+def _literal_inline_shell_command(node: ast.expr | None) -> tuple[bool, ast.expr | None]:
+    """Return the command argument when literal argv explicitly invokes a shell."""
+    if not isinstance(node, (ast.List, ast.Tuple)) or len(node.elts) < 2:
+        return False, None
+    executable = _constant_string(node.elts[0])
+    flag = _constant_string(node.elts[1])
+    if executable is None or flag is None:
+        return False, None
+
+    basename = executable.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
+    normalized_flag = flag.lower()
+    if basename in _SHELL_INTERPRETERS:
+        inline = flag == "-c" or (
+            flag.startswith("-") and not flag.startswith("--") and "c" in flag[1:]
+        )
+    elif basename in _CMD_INTERPRETERS:
+        inline = normalized_flag == "/c"
+    elif basename in _POWERSHELL_INTERPRETERS:
+        inline = normalized_flag in {"-c", "-command"}
+    else:
+        inline = False
+    if not inline:
+        return False, None
+    return True, node.elts[2] if len(node.elts) >= 3 else None
+
+
+def _has_dynamic_executable(node: ast.Call) -> bool:
+    """Return whether ``executable=`` is present but not a literal string."""
+    return any(
+        keyword.arg == "executable" and _constant_string(keyword.value) is None
+        for keyword in node.keywords
+    )
 
 
 def _subprocess_command_arg(node: ast.Call) -> ast.expr | None:
@@ -419,12 +460,20 @@ def _ast4_guidance(node: ast.Call, attr: str) -> tuple[str, str]:
     """Return contextual AST4 guidance without changing detection or scoring."""
     command = _subprocess_command_arg(node)
     shell_mode = _subprocess_shell_mode(node, attr)
-    if shell_mode is False and _is_fixed_argv(command):
-        return _AST4_FIXED_ARGV_EXPLANATION, _AST4_FIXED_ARGV_REMEDIATION
+    inline_shell, inline_command = _literal_inline_shell_command(command)
+
     if shell_mode is True:
         if _is_constructed_shell_command(command):
             return _AST4_SHELL_BUILD_EXPLANATION, _AST4_SHELL_BUILD_REMEDIATION
         return _AST4_SHELL_STRING_EXPLANATION, _AST4_SHELL_STRING_REMEDIATION
+    if inline_shell:
+        if _is_constructed_shell_command(inline_command):
+            return _AST4_SHELL_BUILD_EXPLANATION, _AST4_SHELL_BUILD_REMEDIATION
+        return _AST4_SHELL_STRING_EXPLANATION, _AST4_SHELL_STRING_REMEDIATION
+    if _has_dynamic_executable(node):
+        return _AST4_UNKNOWN_EXPLANATION, _AST4_UNKNOWN_REMEDIATION
+    if shell_mode is False and _is_fixed_argv(command):
+        return _AST4_FIXED_ARGV_EXPLANATION, _AST4_FIXED_ARGV_REMEDIATION
     if shell_mode is None:
         return _AST4_UNKNOWN_SHELL_EXPLANATION, _AST4_UNKNOWN_SHELL_REMEDIATION
     return _AST4_UNKNOWN_EXPLANATION, _AST4_UNKNOWN_REMEDIATION
