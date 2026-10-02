@@ -62,9 +62,11 @@ _PRINTF_STATIC_ARGUMENTS = 32
 _PRINTF_STATIC_WORD_RE = re.compile(r"[-A-Za-z0-9_./*?%]{0,64}")
 # A bounded ``printf`` format operand may also carry POSIX backslash escapes.
 _PRINTF_FORMAT_WORD_RE = re.compile(r"[-A-Za-z0-9_./*?%\\]{0,64}")
-# Anything that would end or split the shell word that a decoded ``printf``
-# result is substituted into. Every other byte is inert data for this parser.
-_PRINTF_WORD_SEPARATOR_RE = re.compile(r"[\s'\"`\\$;&|()<>{}~\x00]")
+# The old deterministic alphabet plus the control/high-byte values needed by
+# byte-oriented probes. Anything outside this set is either a shell separator,
+# a metacharacter the downstream glob model does not handle, or otherwise not
+# provably inert, so the substitution stays undecidable.
+_PRINTF_SAFE_WORD_RE = re.compile(r"[\x01-\x08\x0e-\x1f\x7f-\xffA-Za-z0-9_./*?%-]*")
 _DESTRUCTIVE_COMMAND_BASENAMES = frozenset({"rm", "del", "erase"})
 _QUOTED_GLOB_SENTINEL = "\ue000"
 _DYNAMIC_SHELL_WORD_SENTINEL = "\ue001"
@@ -1226,11 +1228,13 @@ _PRINTF_ESCAPE_SEQUENCES = {
 
 
 def _decode_printf_escapes(text: str) -> str | None:
-    """Decode the POSIX ``printf`` escapes inside one bounded literal segment.
+    """Decode bounded escapes as modeled by Bash builtin/coreutils ``printf``.
 
-    Only escapes that POSIX/GNU ``printf`` defines are decoded.  Anything else
-    makes the substitution undecidable and returns ``None`` so the caller keeps
-    its fail-closed behaviour.
+    This intentionally models the Bash/GNU-coreutils escape subset used by the
+    static parser.  Extensions such as ``\\xHH``, ``\\e``/``\\E``, ``\\'`` and
+    ``\\"`` are not portable to a dash ``printf`` and are not a general POSIX
+    guarantee.  Unknown or trailing escapes make the substitution undecidable
+    and return ``None`` so the caller keeps its fail-closed behaviour.
     """
     output: list[str] = []
     cursor = 0
@@ -1259,7 +1263,10 @@ def _decode_printf_escapes(text: str) -> str | None:
             digits = _PRINTF_OCTAL_ESCAPE_RE.match(text, cursor + 1)
             if digits is None:
                 return None
-            output.append(chr(int(digits.group(0), 8)))
+            value = int(digits.group(0), 8)
+            if value > 0o377:
+                return None
+            output.append(chr(value))
             cursor = digits.end()
             continue
         return None
@@ -1268,7 +1275,7 @@ def _decode_printf_escapes(text: str) -> str | None:
 
 def _bounded_printf_word(result: str) -> str | None:
     """Return a decoded ``printf`` result only when it stays one inert word."""
-    if _PRINTF_WORD_SEPARATOR_RE.search(result) is not None:
+    if _PRINTF_SAFE_WORD_RE.fullmatch(result) is None:
         return None
     return result
 

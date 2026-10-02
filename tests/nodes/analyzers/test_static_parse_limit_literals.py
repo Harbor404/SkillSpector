@@ -75,12 +75,37 @@ def test_issue_reproducer_reaches_completed_ledger_outcome() -> None:
         pytest.param("$(printf '\\162\\155 -rf /')", id="octal-prefixed-destructive"),
         pytest.param("$(printf '\\040rm')", id="escape-emits-separator"),
         pytest.param("$(printf '\\047rm')", id="escape-emits-quote"),
+        pytest.param("$(printf '\\400')", id="octal-overflow-nul"),
+        pytest.param("$(printf '\\440')", id="octal-overflow-space"),
+        pytest.param("$(printf '\\447')", id="octal-truncates-to-quote"),
+        pytest.param("$(printf '\\504')", id="octal-truncates-to-dollar"),
+        pytest.param("$(printf '\\133\\135')", id="decoded-brackets"),
         pytest.param("$(printf '\\qrm')", id="unknown-escape"),
     ],
 )
 def test_destructive_or_undecidable_printf_stays_partial(substitution: str) -> None:
     source = f'echo "{substitution}"\n'
     assert tm.has_bounded_parse_exhaustion(source, lambda: None, file_type="shell") is True
+
+
+@pytest.mark.parametrize(
+    "substitution",
+    [
+        "$(printf '\\400')",
+        "$(printf '\\440')",
+        "$(printf '\\447')",
+        "$(printf '\\504')",
+    ],
+)
+def test_out_of_range_octal_is_not_resolved(substitution: str) -> None:
+    """Octals above one byte stay fail-closed instead of producing a code point."""
+    assert tm._static_printf_substitution(substitution, 0, len(substitution)) is None
+
+
+def test_decoded_brackets_are_not_treated_as_inert() -> None:
+    """Unmodeled glob metacharacters must keep the substitution undecidable."""
+    substitution = "$(printf '\\133\\135')"
+    assert tm._static_printf_substitution(substitution, 0, len(substitution)) is None
 
 
 def test_destructive_printf_reaches_partial_ledger_outcome() -> None:
