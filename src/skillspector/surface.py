@@ -159,22 +159,35 @@ def _classify(parts: list[str], basename: str) -> str:
 
 def _is_comment_line(line_text: str, basename: str) -> bool:
     """Return whether a line is provably comment-only for the file's syntax."""
-    markers = _COMMENT_MARKERS.get(_extension(basename), ("#",) if _is_env(basename) else ())
+    extension = _extension(basename)
+    markers = _COMMENT_MARKERS.get(extension, ("#",) if _is_env(basename) else ())
     stripped = line_text.strip()
     if not markers or not stripped:
         return False
     if "#" in markers and stripped.startswith("#"):
+        # In PowerShell, ``#>`` closes a block comment; non-whitespace after
+        # the closer is executable and must not be labelled as a comment.
+        if extension == ".ps1" and stripped.startswith("#>") and stripped[2:].strip():
+            return False
         return True
     if "//" in markers and stripped.startswith("//"):
-        return True
+        # PHP's ``?>`` exits PHP mode even when it appears inside a ``//``
+        # comment, so code after the closer executes.
+        return not (extension == ".php" and "?>" in stripped)
     if "--" in markers and stripped.startswith("--"):
-        if stripped.startswith("--[["):
-            return "]]" not in stripped[4:]
+        if stripped.startswith("--["):
+            level_end = 3
+            while level_end < len(stripped) and stripped[level_end] == "=":
+                level_end += 1
+            if level_end < len(stripped) and stripped[level_end] == "[":
+                closer = "]" + "=" * (level_end - 3) + "]"
+                return closer not in stripped[level_end + 1 :]
         return True
     if "/*" in markers and stripped.startswith("/*"):
         return "*/" not in stripped[2:]
     if "<!--" in markers and stripped.startswith("<!--"):
-        return "-->" not in stripped[4:]
+        comment_body = stripped[2:]
+        return "-->" not in comment_body and "--!>" not in comment_body
     return False
 
 

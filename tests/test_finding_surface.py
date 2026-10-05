@@ -70,6 +70,12 @@ def test_infer_surface_classifies_the_path(file_path: str, expected: str) -> Non
         ("page.html", "<!-- x --><script>eval(x)</script>", CODE),
         ("script.lua", "-- note", COMMENTS),
         ("script.lua", "--[[x]] os.execute('id')", CODE),
+        ("script.ps1", "#> Invoke-Expression $payload", CODE),
+        ("script.php", "// note ?><?php system($_GET['c']); ?>", CODE),
+        ("script.lua", "--[=[ x ]=] os.execute('id')", CODE),
+        ("page.html", "<!--><script>eval(x)</script>", CODE),
+        ("page.html", "<!---><script>eval(x)</script>", CODE),
+        ("page.html", "<!-- x --!><script>eval(x)</script>", CODE),
         ("query.sql", "-- note", COMMENTS),
         # a comment inside a config file is still a comment
         ("setup.cfg", "# pinned", COMMENTS),

@@ -790,8 +790,8 @@ The top-level shape is (this example shows a full LLM-backed scan; with `--no-ll
 - `risk_assessment.severity` ∈ `LOW | MEDIUM | HIGH | CRITICAL`.
 - `risk_assessment.recommendation` ∈ `SAFE | CAUTION | DO_NOT_INSTALL`, mapped from severity: `LOW → SAFE`, `MEDIUM → CAUTION`, `HIGH`/`CRITICAL → DO_NOT_INSTALL`.
 - `issues[].surface` and `suppressed[].surface` are advisory, heuristic labels for where a finding landed:
-  `code | instructions | docs | tests | comments | config`. Findings in compacted groups also expose a per-occurrence
-  `occurrences[].surface`; SARIF emits the label as `properties.surface` on each result occurrence. The label is
+  `code | instructions | docs | tests | comments | config`. JSON expands compacted groups into one `issues[]` entry
+  per occurrence, each with its own `surface`; SARIF emits `properties.surface` on each result. The label is
   path/line-based and the scanned author can influence it, so do not use it as the sole suppression or security signal.
 - `metadata.llm_error` appears only when LLM analysis was requested but unavailable.
 - AE1 findings use **Incomplete referenced artifact analysis**. Their source
