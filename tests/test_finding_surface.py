@@ -10,6 +10,9 @@ import json
 import pytest
 
 from skillspector.models import AnalyzerFinding, Finding, Location, Severity
+from skillspector.nodes.analyzers import (
+    static_patterns_data_exfiltration as data_exfiltration_module,
+)
 from skillspector.nodes.analyzers import static_runner
 from skillspector.nodes.analyzers.static_runner import analyzer_finding_to_finding
 from skillspector.nodes.deduplicate import deduplicate
@@ -71,6 +74,8 @@ def test_infer_surface_classifies_the_path(file_path: str, expected: str) -> Non
         ("script.lua", "-- note", COMMENTS),
         ("script.lua", "--[[x]] os.execute('id')", CODE),
         ("script.ps1", "#> Invoke-Expression $payload", CODE),
+        ("script.ps1", "##> Invoke-Expression $payload", CODE),
+        ("script.ps1", "# note #> Invoke-Expression $payload", CODE),
         ("script.php", "// note ?><?php system($_GET['c']); ?>", CODE),
         ("script.lua", "--[=[ x ]=] os.execute('id')", CODE),
         ("page.html", "<!--><script>eval(x)</script>", CODE),
@@ -120,6 +125,18 @@ def test_multiline_finding_requires_every_line_to_be_comment(content: str, expec
 
     assert converted is not None
     assert converted.surface == expected
+
+
+def test_ast_line_numbers_ignore_non_cpython_line_breaks() -> None:
+    """AST findings index source without splitlines-only separators."""
+    content = "import os\n\f# Collect settings for the report\nenv = dict(os.environ)\n"
+    state = {"components": ["script.py"], "file_cache": {"script.py": content}}
+
+    findings = static_runner.run_static_patterns(state, [data_exfiltration_module])
+    e2 = next(finding for finding in findings if finding.rule_id == "E2")
+
+    assert e2.start_line == 3
+    assert e2.surface == CODE
 
 
 def test_deduplicate_to_expand_preserves_each_occurrence_surface() -> None:

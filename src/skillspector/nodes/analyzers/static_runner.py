@@ -884,6 +884,16 @@ def _convert_analyzer_finding(
     return analyzer_finding_to_finding(af, line_text=line_text)
 
 
+def _source_lines_for_line_numbers(content: str) -> list[str]:
+    """Split source on physical newlines counted by CPython line numbers.
+
+    ``str.splitlines`` also splits on vertical tab, form feed, file/group/record
+    separators, NEL, and Unicode line/paragraph separators.  CPython does not
+    count those as lines, so using it here shifts AST-derived line lookups.
+    """
+    return content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
 def _scan_path(
     path: str,
     content: str,
@@ -899,7 +909,7 @@ def _scan_path(
     """Run pattern modules with construction, emission, and runtime guards."""
     findings: list[Finding] = []
     file_type = _infer_file_type(path)
-    content_lines = content.splitlines()
+    content_lines = _source_lines_for_line_numbers(content)
     normalized_license_lines = (
         tuple(_normalize_license_line(line) for line in content_lines)
         if _is_license_basename(path, file_type)

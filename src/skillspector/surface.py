@@ -165,10 +165,13 @@ def _is_comment_line(line_text: str, basename: str) -> bool:
     if not markers or not stripped:
         return False
     if "#" in markers and stripped.startswith("#"):
-        # In PowerShell, ``#>`` closes a block comment; non-whitespace after
-        # the closer is executable and must not be labelled as a comment.
-        if extension == ".ps1" and stripped.startswith("#>") and stripped[2:].strip():
-            return False
+        # In PowerShell, ``#>`` closes a block comment wherever it appears;
+        # non-whitespace after any closer is executable and must not be
+        # labelled as a comment.
+        if extension == ".ps1":
+            closer = stripped.find("#>")
+            if closer >= 0 and stripped[closer + 2 :].strip():
+                return False
         return True
     if "//" in markers and stripped.startswith("//"):
         # PHP's ``?>`` exits PHP mode even when it appears inside a ``//``
