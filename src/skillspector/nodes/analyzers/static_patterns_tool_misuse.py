@@ -63,10 +63,12 @@ _PRINTF_STATIC_WORD_RE = re.compile(r"[-A-Za-z0-9_./*?%]{0,64}")
 # A bounded ``printf`` format operand may also carry POSIX backslash escapes.
 _PRINTF_FORMAT_WORD_RE = re.compile(r"[-A-Za-z0-9_./*?%\\]{0,64}")
 # The old deterministic alphabet plus the control/high-byte values needed by
-# byte-oriented probes. Anything outside this set is either a shell separator,
-# a metacharacter the downstream glob model does not handle, or otherwise not
-# provably inert, so the substitution stays undecidable.
-_PRINTF_SAFE_WORD_RE = re.compile(r"[\x01-\x08\x0e-\x1f\x7f-\xffA-Za-z0-9_./*?%-]*")
+# byte-oriented probes. Command substitutions are expanded after shell syntax
+# has been recognized, so decoded angle brackets remain literal word data
+# rather than redirections. Anything else outside this set is either a shell
+# separator, a metacharacter the downstream glob model does not handle, or
+# otherwise not provably inert, so the substitution stays undecidable.
+_PRINTF_SAFE_WORD_RE = re.compile(r"[\x01-\x08\x0e-\x1f\x7f-\xffA-Za-z0-9_./*?%<>-]*")
 _DESTRUCTIVE_COMMAND_BASENAMES = frozenset({"rm", "del", "erase"})
 _QUOTED_GLOB_SENTINEL = "\ue000"
 _DYNAMIC_SHELL_WORD_SENTINEL = "\ue001"

@@ -27,8 +27,15 @@ _RUSTUP_ELF_PROBE = (
     "fi\n"
 )
 
+# Verbatim shape of the machine-byte probe from rustup-init.sh line 266.
+_RUSTUP_MACHINE_PROBE = (
+    '#!/bin/sh\n_m=$(head -c 19 "$1" | tail -c 1)\n[ "$_m" = "$(printf \'\\076\')" ]\n'
+)
+
 _LITERAL_SUBSTITUTIONS = [
     pytest.param("$(printf '\\177ELF\\001')", "\x7fELF\x01", id="elf-probe-octal"),
+    pytest.param("$(printf '\\074')", "<", id="octal-less-than"),
+    pytest.param("$(printf '\\076')", ">", id="octal-greater-than"),
     pytest.param("$(printf '\\x41\\x42')", "AB", id="hex-escapes"),
     pytest.param("$(printf '\\162\\155')", "rm", id="octal-letters"),
     pytest.param("$(printf 'abc')", "abc", id="plain-literal"),
@@ -55,10 +62,28 @@ def test_issue_reproducer_completes_static_analysis() -> None:
     )
 
 
+@pytest.mark.parametrize("escape", ["076", "077", "001"])
+def test_rustup_machine_probe_completes_static_analysis(escape: str) -> None:
+    source = _RUSTUP_MACHINE_PROBE.replace("\\076", f"\\{escape}", 1)
+    assert tm.has_bounded_parse_exhaustion(source, lambda: None, file_type="shell") is False
+
+
 def test_issue_reproducer_reaches_completed_ledger_outcome() -> None:
     path = "install.sh"
     result = static_runner.run_static_patterns_with_ledger(
         {"components": [path], "file_cache": {path: _RUSTUP_ELF_PROBE}}, [tm]
+    )
+    row = result["inspection_ledger"][0]
+    assert row["path"] == path
+    assert row["analyzer_id"] == "static_patterns_tool_misuse"
+    assert row["outcome"] is LedgerOutcome.COMPLETED
+    assert "reason_code" not in row
+
+
+def test_rustup_machine_probe_reaches_completed_ledger_outcome() -> None:
+    path = "install.sh"
+    result = static_runner.run_static_patterns_with_ledger(
+        {"components": [path], "file_cache": {path: _RUSTUP_MACHINE_PROBE}}, [tm]
     )
     row = result["inspection_ledger"][0]
     assert row["path"] == path
