@@ -329,6 +329,33 @@ class TestSubprocessGuidance:
         assert "shell expansion is disabled" not in explanation
         assert "unknown caller input" not in explanation.lower()
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            ("import subprocess\nscript = read_script()\nsubprocess.run(['bash'], input=script)\n"),
+            (
+                "import subprocess\n"
+                "payload = read_payload()\n"
+                "subprocess.run(['sh', '-s'], input=payload)\n"
+            ),
+            (
+                "import subprocess\n"
+                "subprocess.run(['powershell', '-NoProfile', '-EncodedCommand', 'SQBFAFgA'])\n"
+            ),
+            "import subprocess\nsubprocess.run(['cmd', '/k', 'whoami'])\n",
+        ],
+    )
+    def test_known_shell_without_inline_flag_never_uses_fixed_argv_guidance(self, code):
+        finding = next(f for f in _run(code) if f.rule_id == "AST4")
+
+        explanation = finding.explanation or ""
+        remediation = finding.remediation or ""
+
+        assert "shell command string" in explanation.lower()
+        assert "shell expansion is disabled" not in explanation
+        assert "fixed argument vector" not in explanation.lower()
+        assert "keep the explicit argument vector" not in remediation.lower()
+
     def test_unknown_shell_mode_takes_precedence_over_dynamic_executable(self):
         code = "import subprocess\nsubprocess.Popen(cmd, shell=use_shell, executable=exe)\n"
         finding = next(f for f in _run(code) if f.rule_id == "AST4")

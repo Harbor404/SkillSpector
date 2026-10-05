@@ -392,6 +392,21 @@ _CMD_INTERPRETERS = frozenset({"cmd", "cmd.exe"})
 _POWERSHELL_INTERPRETERS = frozenset({"powershell", "powershell.exe", "pwsh", "pwsh.exe"})
 
 
+def _literal_shell_interpreter(node: ast.expr | None) -> bool:
+    """Return whether literal argv[0] names a known shell interpreter."""
+    if not isinstance(node, (ast.List, ast.Tuple)) or not node.elts:
+        return False
+    executable = _constant_string(node.elts[0])
+    if executable is None:
+        return False
+    basename = executable.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
+    return (
+        basename in _SHELL_INTERPRETERS
+        or basename in _CMD_INTERPRETERS
+        or basename in _POWERSHELL_INTERPRETERS
+    )
+
+
 def _literal_inline_shell_command(node: ast.expr | None) -> tuple[bool, ast.expr | None]:
     """Return the command argument when literal argv explicitly invokes a shell."""
     if not isinstance(node, (ast.List, ast.Tuple)) or len(node.elts) < 2:
@@ -477,6 +492,8 @@ def _ast4_guidance(node: ast.Call, attr: str) -> tuple[str, str]:
         return _AST4_UNKNOWN_SHELL_EXPLANATION, _AST4_UNKNOWN_SHELL_REMEDIATION
     if _has_dynamic_executable(node):
         return _AST4_UNKNOWN_EXPLANATION, _AST4_UNKNOWN_REMEDIATION
+    if _literal_shell_interpreter(command):
+        return _AST4_SHELL_STRING_EXPLANATION, _AST4_SHELL_STRING_REMEDIATION
     if _is_fixed_argv(command):
         return _AST4_FIXED_ARGV_EXPLANATION, _AST4_FIXED_ARGV_REMEDIATION
     return _AST4_UNKNOWN_EXPLANATION, _AST4_UNKNOWN_REMEDIATION
