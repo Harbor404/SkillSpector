@@ -10,7 +10,11 @@ from dataclasses import replace
 from hashlib import sha256
 
 from skillspector.logging_config import get_logger
-from skillspector.models import Finding
+from skillspector.models import (
+    OCCURRENCE_CODE_SNIPPET_KEY,
+    OCCURRENCE_FINDING_ID_KEY,
+    Finding,
+)
 from skillspector.surface import SURFACES, infer_surface
 
 logger = get_logger(__name__)
@@ -20,7 +24,14 @@ _SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
 def _occurrences(finding: Finding) -> list[dict[str, object]]:
     if finding.occurrences:
-        return [dict(item) for item in finding.occurrences]
+        occurrences = [dict(item) for item in finding.occurrences]
+        for occurrence in occurrences:
+            occurrence.setdefault(OCCURRENCE_FINDING_ID_KEY, finding.finding_id)
+            occurrence.setdefault(
+                OCCURRENCE_CODE_SNIPPET_KEY,
+                finding.code_snippet or finding.context,
+            )
+        return occurrences
     return [
         {
             "file": finding.file,
@@ -32,6 +43,8 @@ def _occurrences(finding: Finding) -> list[dict[str, object]]:
             "source_identity": finding.source_identity,
             "source_digest": finding.source_digest,
             "transitive_depth": finding.transitive_depth,
+            OCCURRENCE_FINDING_ID_KEY: finding.finding_id,
+            OCCURRENCE_CODE_SNIPPET_KEY: finding.code_snippet or finding.context,
         }
     ]
 
@@ -142,7 +155,14 @@ def _output_key(finding: Finding) -> tuple[object, ...]:
         _finding_source_scope(finding),
         finding.fingerprint() or "",
         json.dumps(
-            finding.occurrences,
+            [
+                {
+                    key: value
+                    for key, value in occurrence.items()
+                    if key not in {OCCURRENCE_FINDING_ID_KEY, OCCURRENCE_CODE_SNIPPET_KEY}
+                }
+                for occurrence in finding.occurrences
+            ],
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
@@ -195,21 +215,31 @@ def deduplicate(findings: list[Finding]) -> list[Finding]:
         _classification_metadata,
     ), group in groups.items():
         representative = min(group, key=_representative_key)
-        occurrences = {
-            (
-                str(occurrence.get("file", "")),
-                _line(occurrence.get("start_line"), 1),
-                occurrence.get("end_line"),
-                occurrence.get("start_column"),
-                occurrence.get("end_column"),
-                str(occurrence.get("source_identity") or finding.source_identity or ""),
-                str(occurrence.get("source_digest") or finding.source_digest or ""),
-                str(occurrence.get("source_url") or finding.source_url or ""),
-                _line(occurrence.get("transitive_depth"), finding.transitive_depth),
-            ): _occurrence_surface(finding, occurrence)
-            for finding in group
-            for occurrence in _occurrences(finding)
-        }
+        occurrences: dict[tuple[object, ...], tuple[object, object, str]] = {}
+        for finding in sorted(group, key=_representative_key):
+            for occurrence in _occurrences(finding):
+                location = (
+                    str(occurrence.get("file", "")),
+                    _line(occurrence.get("start_line"), 1),
+                    occurrence.get("end_line"),
+                    occurrence.get("start_column"),
+                    occurrence.get("end_column"),
+                    str(occurrence.get("source_identity") or finding.source_identity or ""),
+                    str(occurrence.get("source_digest") or finding.source_digest or ""),
+                    str(occurrence.get("source_url") or finding.source_url or ""),
+                    _line(occurrence.get("transitive_depth"), finding.transitive_depth),
+                )
+                occurrences.setdefault(
+                    location,
+                    (
+                        occurrence.get(OCCURRENCE_FINDING_ID_KEY, finding.finding_id),
+                        occurrence.get(
+                            OCCURRENCE_CODE_SNIPPET_KEY,
+                            finding.code_snippet or finding.context,
+                        ),
+                        _occurrence_surface(finding, occurrence),
+                    ),
+                )
         ordered_occurrences = [
             {
                 "file": file,
@@ -222,18 +252,23 @@ def deduplicate(findings: list[Finding]) -> list[Finding]:
                 **({"source_url": source_url} if source_url else {}),
                 **({"transitive_depth": transitive_depth} if transitive_depth else {}),
                 **({"surface": surface} if surface else {}),
+                OCCURRENCE_FINDING_ID_KEY: report_finding_id,
+                OCCURRENCE_CODE_SNIPPET_KEY: report_code_snippet,
             }
             for (
-                file,
-                start,
-                end,
-                start_column,
-                end_column,
-                source_identity,
-                source_digest,
-                source_url,
-                transitive_depth,
-            ), surface in sorted(
+                (
+                    file,
+                    start,
+                    end,
+                    start_column,
+                    end_column,
+                    source_identity,
+                    source_digest,
+                    source_url,
+                    transitive_depth,
+                ),
+                (report_finding_id, report_code_snippet, surface),
+            ) in sorted(
                 occurrences.items(),
                 key=lambda item: (
                     item[0][5],
