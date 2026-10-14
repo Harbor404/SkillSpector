@@ -490,6 +490,13 @@ def _markdown_context_prefix(
     return ""
 
 
+# Separators that ``str.splitlines()`` honours but CPython's own line numbering
+# does not: vertical tab, form feed, file/group/record separators, NEL, and the
+# Unicode line/paragraph separators. They make the two coordinate systems used
+# below disagree -- see :func:`_refined_surface_line`.
+_EXOTIC_LINE_BREAKS = tuple(ch for ch in LINE_BREAK_CHARS if ch not in "\r\n")
+
+
 def _normalize_license_line(line: str) -> str:
     return " ".join(line.casefold().split())
 
@@ -964,28 +971,37 @@ def _convert_analyzer_finding(
         for triage_tag in ("contextual-triage", "likely-benign-context"):
             if triage_tag not in af.tags:
                 af.tags.append(triage_tag)
+    return analyzer_finding_to_finding(
+        af, line_text=_refined_surface_line(af, path, content, content_lines)
+    )
+
+
+def _refined_surface_line(
+    af: AnalyzerFinding,
+    path: str,
+    content: str,
+    content_lines: list[str],
+) -> str | None:
+    """The matched source line, or ``None`` when line numbering is ambiguous.
+
+    Findings from the pattern modules number lines with
+    :func:`logical_line_starts`, which breaks on ``_EXOTIC_LINE_BREAKS`` as well
+    as CR/LF; Python AST findings use CPython's physical ``\n`` count instead.
+    The two agree only when the source contains none of those extra separators,
+    so for such files the refinement is skipped rather than indexing
+    ``content_lines`` with a line number from the other system -- which would
+    otherwise report a neighbouring line's surface.
+    """
+    if any(ch in content for ch in _EXOTIC_LINE_BREAKS):
+        return None
     start_line = af.location.start_line
     end_line = af.location.end_line or start_line
     start_index = max(0, start_line - 1)
     end_index = min(len(content_lines), end_line)
     covered_lines = content_lines[start_index:end_index]
-    line_text = (
-        covered_lines[0]
-        if covered_lines
-        and all(infer_surface(path, line_text) == COMMENTS for line_text in covered_lines)
-        else None
-    )
-    return analyzer_finding_to_finding(af, line_text=line_text)
-
-
-def _source_lines_for_line_numbers(content: str) -> list[str]:
-    """Split source on physical newlines counted by CPython line numbers.
-
-    ``str.splitlines`` also splits on vertical tab, form feed, file/group/record
-    separators, NEL, and Unicode line/paragraph separators.  CPython does not
-    count those as lines, so using it here shifts AST-derived line lookups.
-    """
-    return content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if covered_lines and all(infer_surface(path, text) == COMMENTS for text in covered_lines):
+        return covered_lines[0]
+    return None
 
 
 def _scan_path(
@@ -1006,7 +1022,7 @@ def _scan_path(
     file_type = _infer_file_type(path)
     if python_source is None:
         python_source = may_be_python_source(path, content)
-    content_lines = _source_lines_for_line_numbers(content)
+    content_lines = content.splitlines()
     normalized_license_lines = (
         tuple(_normalize_license_line(line) for line in content_lines)
         if _is_license_basename(path, file_type)
